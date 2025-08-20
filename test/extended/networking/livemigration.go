@@ -584,14 +584,38 @@ func duplicateVM(cli *kubevirt.Client, vmNamespace, vmName string) {
 	Expect(json.Unmarshal([]byte(originalVMIRawAnnotations), &originalVMIAnnotations)).To(Succeed())
 
 	var vmiCreationOptions []kubevirt.Option
+	var vmiExpectations []func()
 	if requestedIPs, hasIPRequests := originalVMIAnnotations[kvIPRequestsAnnot]; hasIPRequests {
 		vmiCreationOptions = append(
 			vmiCreationOptions,
 			kubevirt.WithAnnotations(ipRequests(requestedIPs)),
 		)
+		vmiExpectations = append(vmiExpectations, func() {
+			waitForVMPodEventWithMessage(
+				cli,
+				vmNamespace,
+				duplicateVMName,
+				"IP is already allocated",
+				2*time.Minute,
+			)
+		})
+	}
+
+	if hasMACAddressRequest(vmiSpecJSON) {
+		vmiExpectations = append(vmiExpectations, func() {
+			waitForVMPodEventWithMessage(
+				cli,
+				vmNamespace,
+				duplicateVMName,
+				"MAC address conflict detected:",
+				2*time.Minute,
+			)
+		})
 	}
 	Expect(cli.CreateVMIFromSpec(vmNamespace, duplicateVMName, vmiSpec, vmiCreationOptions...)).To(Succeed())
-	waitForVMPodEventWithMessage(cli, vmNamespace, duplicateVMName, "IP is already allocated", 2*time.Minute)
+	for _, expectation := range vmiExpectations {
+		expectation()
+	}
 }
 
 func waitForVMPodEventWithMessage(vmClient *kubevirt.Client, vmNamespace, vmName, expectedEventMessage string, timeout time.Duration) {
@@ -824,4 +848,8 @@ func formatAddressesAnnotation(preconfiguredIPs []string) (string, error) {
 
 func ipRequests(ips string) map[string]string {
 	return map[string]string{kvIPRequestsAnnot: ips}
+}
+
+func hasMACAddressRequest(vmiSpecJSON string) bool {
+	return strings.Contains(vmiSpecJSON, "macAddress")
 }
